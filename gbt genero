@@ -1,4 +1,4 @@
-data = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_abt_modelo_v3")
+data = spark.sql("SELECT * from base")
 
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import GBTClassifier
@@ -49,7 +49,7 @@ def ExtractFeatureImp(featureImp, dataset, featuresCol):
 ExtractFeatureImp(model.stages[-1].featureImportances, predictions, "features").head(30)
 
 data_full = spark.sql("""
-SELECT * from  dbdl_sbox_business_analytics.aym_abt_modelo_todo_mundo
+SELECT * from  dbdl_sbox_business_analytics.base
 --where flag_bradesco = 1 
 --and flag_debito = 0
 """)

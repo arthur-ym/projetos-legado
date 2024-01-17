@@ -39,9 +39,9 @@ def ExtractFeatureImp(featureImp, dataset, featuresCol):
 
 
 
-trainingData = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_trocas_flex_modelo_v4")
+trainingData = spark.sql("SELECT * from base")
 
-realData = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_trocas_flex_modelo_rfv_final")
+realData = spark.sql("SELECT * from base_treino")
 
 
 rf = RandomForestClassifier(labelCol="beneficio_factor",    # coluna flag/possiveis respostas 

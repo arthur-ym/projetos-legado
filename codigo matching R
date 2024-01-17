@@ -1,0 +1,83 @@
+
+# função para um lote de chave 
+library(MatchIt)
+
+roda_mahalanobis = function( df_total ) {
+    base_final = collect( df_total )
+    rownames(base_final) = base_final$numerocartao_sha2
+    
+    m.out <- matchit(flag_evento ~ fat_m_1+fat_m_2+fat_m_3+qtd_transacoes_m_1+qtd_transacoes_m_2+qtd_transacoes_m_3, 
+                        data = base_final, method = "nearest", distance = "mahalanobis", ratio=1, order="random", verbose=TRUE)
+    pares<-m.out[["match.matrix"]]
+    pares = data.frame( numerocartao_sha2 =  cbind(rownames(pares), par = data.frame(pares, row.names=NULL)) )
+    names(pares) = c("numerocartao_sha2" , "par")
+    
+    df_pares_spark = createDataFrame(pares)
+    return(df_pares_spark)
+}
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------
+sql(sqlContext, "drop table if exists dbdl_sbox_business_analytics.aym_saida_match")
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------
+# -- 14min -> 47 interações
+# -- 15min -> 20 interações
+# -- 19min -> 60 interações
+# -- Dependendo da base -> ate 1h+- 
+# loop para cada CHAVE
+for ( i in base_chave$decil_chave ) {
+    #-------filtra o bin-------
+    df_dentro_v2 = filter(df_dentro2 , paste("decil_chave =='" , i , "'" , sep ="") )
+    df_fora_v2   = filter(df_fora2   , paste("decil_chave =='" , i , "'" , sep ="") )
+    if( nrow(df_dentro_v2) > 1 & nrow(df_fora_v2) > 1){
+        ##-------amostragem DENTRO-------
+        p = min(1,  1000 / nrow(df_dentro_v2))
+        df_dentro_v2 = sample( df_dentro_v2, withReplacement = F , p )
+        ##-------amostragem FORA-------
+        p = min(1, 20000 / nrow(df_fora_v2))
+        df_fora_v2 = sample( df_fora_v2, withReplacement = F , p )
+        #-------append-------
+        df_total = rbind(df_dentro_v2, df_fora_v2)
+        #-------faz o pares-------
+        result = roda_mahalanobis( df_total )
+        result$decil_chave = i    
+        #-------salva embaixo------
+        saveAsTable(result , "dbdl_sbox_business_analytics.aym_saida_match", mode ="append")
+        }
+    print(paste("rodou a chave", i))
+    #-------limpa a memoria cache da maquina------
+    rm(df_dentro_v2 , df_fora_v2 , result)
+    gc()
+}
+
+--------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+--set hive.execution.engine=spark;
+--drop table if exists dbdl_sbox_business_analytics.aym_base_controle;
+CREATE TABLE dbdl_sbox_business_analytics.aym_base_controle as 
+SELECT
+numerocartao_sha2,
+split(decil_chave, '\\|')[0] as decil,
+split(decil_chave, '\\|')[1] as variante,
+split(decil_chave, '\\|')[2] as produto,
+split(decil_chave, '\\|')[3] as emissor,
+split(decil_chave, '\\|')[4] as ano_mes,
+cast(substr(split(decil_chave, '\\|')[4],1,4) as int) as ano,
+cast(substr(split(decil_chave, '\\|')[4],5,5) as int) as mes,
+1 as flag_promo
+from dbdl_sbox_business_analytics.aym_saida_match a 
+UNION all
+SELECT
+par as numerocartao_sha2,
+split(decil_chave, '\\|')[0] as decil,
+split(decil_chave, '\\|')[1] as variante,
+split(decil_chave, '\\|')[2] as produto,
+split(decil_chave, '\\|')[3] as emissor,
+split(decil_chave, '\\|')[4] as ano_mes,
+cast(substr(split(decil_chave, '\\|')[4],1,4) as int) as ano,
+cast(substr(split(decil_chave, '\\|')[4],5,5) as int) as mes,
+0 as flag_promo
+from dbdl_sbox_business_analytics.aym_saida_match a 
