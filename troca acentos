@@ -1,0 +1,45 @@
+'''
+Primeiro teste
+'''
+
+df = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_de_para_nomes_crm_v2")
+df.show(100)
+
+
+from pyspark.sql.functions import col, regexp_replace
+
+
+accent_replacements_br = [
+    (u'á|â', 'a'), (u'Á|Â', 'A'),
+    (u'é|ê', 'e'), (u'É|Ê', 'E'),
+    (u'í', 'i'), (u'Í', 'I'),
+    (u'ò', 'o'), (u'Ó|Õ', 'O'),
+    (u'ú|ü', 'u'), (u'Ú|Ű', 'U'),
+    (u'ñ', 'n'),(u'ã', 'a'),(u'Ã', 'A'),
+    (u'ó', 'o'),(u'ç', 'c'),(u'Ç', 'C'),
+    # see http://stackoverflow.com/a/18123985/3810493 for other characters
+
+    #Troca os outros caracteres por "?":
+    ('[^\x00-\x7F]', '?') 
+]
+
+ 
+
+def remove_accents(column):
+    r = col(column)
+    for a, b in accent_replacements_br:
+        r = regexp_replace(r, a, b)
+    return r.alias('remove_accents(' + column + ')')
+
+a=(remove_accents('primeiro_nome_simp'))
+df2=df.withColumn("primeiro_nome_corr", a)
+#df2.show(200)
+
+
+# Save df to a new table in Hive
+df2.write.mode("overwrite").saveAsTable("dbdl_sbox_business_analytics.aym_de_para_nomes_crm_v3")
+# Show the results using SELECT
+spark.sql("select * from dbdl_sbox_business_analytics.aym_de_para_nomes_crm_v3").show()
+
+
+

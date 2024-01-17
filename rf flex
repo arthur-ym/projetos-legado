@@ -1,0 +1,132 @@
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.feature import IndexToString, StringIndexer, VectorIndexer
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.feature import VectorAssembler
+from pyspark.sql.functions import lit, desc 
+from pyspark.sql.window import *
+from pyspark.sql.functions import col, row_number, explode,sort_array, size, array, struct, lit
+from pyspark.sql.window import Window
+from pyspark.sql import Row
+from pyspark.sql.functions import udf
+from pyspark.sql.types import FloatType
+import pandas as pd
+import numpy as np
+from pyspark.sql.types import IntegerType
+
+def to_long(df, by):
+
+    # Filter dtypes and split into column names and type description
+    cols, dtypes = zip(*((c, t) for (c, t) in df.dtypes if c not in by))
+    # Spark SQL supports only homogeneous columns
+    assert len(set(dtypes)) == 1, "All columns have to be of the same type"
+
+    # Create and explode an array of (column_name, column_value) structs
+    kvs = explode(array([
+      struct(lit(c).alias("key"), col(c).alias("val")) for c in cols
+    ])).alias("kvs")
+
+    return df.select(by + [kvs]).select(by + ["kvs.key", "kvs.val"])
+    
+
+def ExtractFeatureImp(featureImp, dataset, featuresCol):
+    list_extract = []
+    for i in dataset.schema[featuresCol].metadata["ml_attr"]["attrs"]:
+        list_extract = list_extract + dataset.schema[featuresCol].metadata["ml_attr"]["attrs"][i]
+    varlist = pd.DataFrame(list_extract)
+    varlist['score'] = varlist['idx'].apply(lambda x: featureImp[x])
+    return(varlist.sort_values('score', ascending = False))
+
+
+
+trainingData = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_trocas_flex_modelo_v4")
+
+realData = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_trocas_flex_modelo_rfv_final")
+
+
+rf = RandomForestClassifier(labelCol="beneficio_factor",    # coluna flag/possiveis respostas 
+                            featuresCol="features",         # vetor de features/ variaveis de entrada 
+                            predictionCol="prediction",     # nome da coluna da variavel resposta cuja prob é maior
+                            probabilityCol="probability",   # nome da coluna que contem vetor com probabilide de cada variavel resposta, posição 0 = prob fator 0 
+                            
+                            maxDepth=4,                     # profundidade das árvores / valor default = 5  
+                            
+                            maxBins=32,                     # máximo de valores distintos de uma feature para ser considerada discreta / valor default = 32
+                            
+                            minInstancesPerNode=100,          # valor mínimo de observações por nó / valor default = 1   
+                            
+                            minInfoGain=0.0,                # valor mínimo de ganho de informação para um nó ser dividido / valor default = 0
+                            
+                            impurity="gini",                # critério usado para o ganho de informação / default = "gini" / opções possíveis = "gini" e "entropy" 
+                            
+                            featureSubsetStrategy="auto",   # define o número de features usados para cada split / default=auto / opções posíveis = auto, all, onethird, sqrt, log2
+                                                            # auto =  sqrt (classification) and onethird (regression)
+                            
+                            seed=12345,                     # semente aleatória pra repetir resultados, default = valor X,
+                            
+                            subsamplingRate=0.7,            # fração do dataset que é utilizado cada árvore 
+                            
+                            numTrees=200)  
+#rf.extractParamMap() # mostra e explica mais um pouco
+
+
+
+#ESCOLHENDO VARIAVEIS DE ENTRADA DO MODELO
+indexer = StringIndexer(inputCol="beneficio_novo", outputCol="beneficio_factor")
+featuresCreator = VectorAssembler(
+ inputCols=[x for x in trainingData.columns if x not in ["numerocartao_sha2","beneficio_novo","beneficio_factor","ranque","col_00",
+            "col_01","col_02","col_03","col_04","col_05","col_06","col_07","col_08","col_09"] ],
+ outputCol='features')
+
+#TREINANDO E FITANDO TREINO E TESTE
+pipeline = Pipeline(stages=[indexer,featuresCreator, rf])
+model = pipeline.fit(trainingData)
+
+predictions_train = model.transform(trainingData)
+predictions_teste = model.transform(realData)
+
+de_para=predictions_train.groupBy("beneficio_novo","beneficio_factor").count().sort(desc("count"))
+de_para.write.mode("overwrite").saveAsTable("dbdl_sbox_business_analytics.aym_flex_de_para_nome_beneficio_factor")
+
+#de_para.show()
+
+import pyspark.sql.functions as F
+import pyspark.sql.types as T
+import numpy as np
+
+#seleciona colunas de cartao e probabilidade
+x=predictions_teste.select(predictions_teste.numerocartao_sha2,predictions_teste.probability)
+x=x.drop_duplicates()
+#ordena beneficios em ordem decrescente
+udf_argsort = F.udf(lambda s: np.argsort(-np.asarray(s)).tolist(), T.ArrayType(T.IntegerType ()))
+x = x.withColumn('prob_rank', udf_argsort('probability'))
+
+#pega valores dentro do vetor, valor 0= mais provavel, valor 1 = segundo mais provavel, etc  
+x=x.withColumn('1', F.col('prob_rank').getItem(0))
+x=x.withColumn('2', F.col('prob_rank').getItem(1))
+x=x.withColumn('3', F.col('prob_rank').getItem(2))
+x=x.withColumn('4', F.col('prob_rank').getItem(3))
+x=x.withColumn('5', F.col('prob_rank').getItem(4))
+x=x.withColumn('6', F.col('prob_rank').getItem(5))
+x=x.withColumn('7', F.col('prob_rank').getItem(6))
+x=x.select("numerocartao_sha2", "1", "2", "3", "4", "5","6", "7" )
+x=to_long(x, ["numerocartao_sha2"])
+x = x.selectExpr("numerocartao_sha2","key as ranque", "val as beneficio_id")
+x=x.withColumn("ranque",col("ranque").cast(IntegerType()))
+
+
+z=x.join(de_para, (x.beneficio_id == de_para.beneficio_factor) ,how='left').select(x.numerocartao_sha2,x.ranque,x.beneficio_id,de_para.beneficio_novo)
+z.write.mode("overwrite").saveAsTable("dbdl_sbox_business_analytics.aym_flex_tabela_recomendacao_final")
+z.show()
+
+
+#GERANDO TABELA TEMPORARIA COM A QTD DE BENEFICIOS RECOMENDADOS
+z.createOrReplaceTempView("base")
+resultado = sqlContext.sql(""" 
+                            select 
+                            beneficio_novo, count(*) as qtd
+                            from base 
+                            group by 1
+                            order by 2 desc""")
+                            
+resultado.show()

@@ -1,0 +1,80 @@
+data = spark.sql("SELECT * from dbdl_sbox_business_analytics.aym_abt_modelo_v3")
+
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import GBTClassifier
+from pyspark.ml.feature import StringIndexer, VectorIndexer
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.feature import VectorAssembler
+ 
+(trainingData, testData) = data.randomSplit([0.8, 0.2] , seed = 12345)
+
+featuresCreator = VectorAssembler(
+ inputCols=[x for x in data.columns if x not in ["numerocartao_sha2","flag_fem" ] ],
+ outputCol='features')
+ 
+gb = GBTClassifier(labelCol="flag_fem" 
+ ,featuresCol="features"
+ ,maxIter = 100 # numero de arvores
+ ,maxDepth = 4 # degraus das arvores
+ ,stepSize = 0.05 # taxa de aprendizado 
+ ,minInfoGain = 0.00001 # ganho de informação em cada corte (Entropia)
+ ,subsamplingRate = 1 # amostragem de cada arvore
+ ,minInstancesPerNode = 1000 # numero de elmentos do nó final
+ ,seed = 123456 # semente aleatoria 
+)
+ 
+pipeline = Pipeline(stages=[featuresCreator, gb])
+
+model = pipeline.fit(trainingData)
+
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+predictions = model.transform(testData)
+evaluator = BinaryClassificationEvaluator( labelCol="flag_fem" , metricName="areaUnderROC")
+print("Test AUC ROC: "+str(evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"}))) 
+
+predictions = model.transform(trainingData)
+evaluator = BinaryClassificationEvaluator( labelCol="flag_fem")
+print("Train AUC ROC: "+str(evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})))
+
+import pandas as pd
+
+def ExtractFeatureImp(featureImp, dataset, featuresCol):
+    list_extract = []
+    for i in dataset.schema[featuresCol].metadata["ml_attr"]["attrs"]:
+        list_extract = list_extract + dataset.schema[featuresCol].metadata["ml_attr"]["attrs"][i]
+    varlist = pd.DataFrame(list_extract)
+    varlist['score'] = varlist['idx'].apply(lambda x: featureImp[x])
+    return(varlist.sort_values('score', ascending = False))
+
+ExtractFeatureImp(model.stages[-1].featureImportances, predictions, "features").head(30)
+
+data_full = spark.sql("""
+SELECT * from  dbdl_sbox_business_analytics.aym_abt_modelo_todo_mundo
+--where flag_bradesco = 1 
+--and flag_debito = 0
+""")
+
+data_full.count()
+
+
+from pyspark.sql.types import DoubleType
+from pyspark.sql import functions as func
+from pyspark.ml.feature import QuantileDiscretizer
+from pyspark.ml.feature import Bucketizer
+ 
+def first_value(col):
+ return func.udf(lambda x: float(x[1]), DoubleType())(col)
+ 
+predictions = model.transform(data_full)
+ 
+base_pred = predictions.withColumn("prob_1", first_value(func.col("probability")))
+base_pred = base_pred.select("numerocartao_sha2","prob_1","prediction")
+
+ 
+#decil = QuantileDiscretizer(numBuckets=10,inputCol="prob_1", outputCol="decil_prob")
+#decil = decil.fit(base_pred)
+ 
+#base_pred = decil.transform(base_pred)
+
+
+base_pred.write.mode("overwrite").saveAsTable("dbdl_sbox_business_analytics.aym_pred_sexo_full")
